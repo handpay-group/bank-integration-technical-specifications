@@ -204,8 +204,6 @@ To enable financial transactions, each verified HandPay user must be linked with
 
 The following flow describes the complete end-to-end registration and card linking process.
 
----
-
 ## 1. Overview of the Registration Flow
 
 ```mathematical
@@ -213,8 +211,6 @@ Palm Capture  →  Identity Verification (via Bank)  →  Card Selection  →  T
 ```
 
 The process begins at a HandPay-enabled terminal and finishes in the bank’s mobile application.
-
----
 
 ## 2. Detailed End-to-End Registration Flow
 
@@ -387,8 +383,6 @@ At this point:
 ✔️ Card token is linked
 ✔️ User can now perform biometric payments
 
----
-
 ## 3. Card Lifecycle Management
 
 The bank must notify HandPay whenever:
@@ -461,8 +455,6 @@ Authorization: Bearer <BANK_API_KEY>
 }
 ```
 
----
-
 ## 4. User status
 
 The bank can query HandPay to get the current status of a user’s palms and linked cards.
@@ -513,8 +505,6 @@ Content-Type: application/json
 }
 ```
 
----
-
 ## 5. Combined Registration + Card Linking Sequence Diagram
 
 ```mermaid
@@ -543,8 +533,6 @@ sequenceDiagram
     B-->>A: success
 
 ```
-
----
 
 ## 6. What the Bank Must Implement
 

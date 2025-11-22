@@ -1,3 +1,200 @@
+# HandPay – SmartOne Terminal & Merchant Onboarding Flow
+
+_(For Payment Provider / Bank Integration)_
+
+## 1. Purpose
+
+This document describes how SmartOne payment terminals running the HandPay Terminal App are:
+
+1. Registered in the HandPay DB, and
+2. Bound to a merchant (business entity) and the HandPay e-POS account provided by the bank.
+
+Registered terminals are then allowed to:
+
+- Send palm-based payment authorization requests to HandPay backend
+- Securely authenticate every request using RSA keys
+
+## 2. Entities
+
+- **SmartOne Terminal** – Physical POS device used in the shop.
+- **HandPay Terminal App** – App installed on the SmartOne terminal.
+- **Merchant** – Business entity that owns/rents the terminal to accept payments.
+- **Bank (Payment Provider)** – Issues terminals, owns e-POS accounts, processes card transactions.
+- **HandPay Backend** – Manages terminals, merchants, palms, and payment routing.
+
+## 3. Terminal Key Generation (On-Device)
+
+On first launch or during initial setup, the HandPay Terminal App on SmartOne must:
+
+1. Generate a unique RSA key pair (2048 bits).
+
+- `terminal_private_key` - stored securely on the device (never leaves the terminal).
+- `terminal_public_key` - shared with HandPay backend during registration.
+
+2. Read terminal serial number from the device.
+3. Collect or receive merchant assignment data (see next section).
+
+## 4. Merchant & Terminal Registration Data
+
+To register a terminal in the HandPay system, the following data is required:
+
+### 4.1. Terminal Data
+
+- `serial_number` – Unique identifier of the SmartOne terminal.
+- `terminal_public_key` – RSA public key generated on-device.
+
+### 4.2. Software Data
+
+- `software_version` – Version of the HandPay Terminal App.
+- `os_version` – Version of the SmartOne terminal OS (e.g.Android 9.0).
+
+### 4.3. Merchant Data
+
+- `merchant_name` – Official name of the business.
+- `merchant_id` – Unique identifier assigned by the bank/payment provider.
+- `merchant_tin` – Tax Identification Number.
+- `checking_account` – Bank account number for settlements.
+- `bank_mfo` – Bank MFO code.
+
+### 4.4. e-POS Account Data
+
+Bank must also provide HandPay with the e-POS account details during the initial integration (_Not in the terminal registration as same e-POS account will be used for all merchant terminal transactions and later get re-distributed to individual business/merchant accounts_).
+
+HandPay will:
+
+- Charge user’s tokenized card → e-POS account, and
+- Later distribute funds from e-POS → merchant checking account based on the merchant registration data.
+
+## 5. Terminal Registration API
+
+```http
+POST /api/v1/provider/terminals
+Content-Type: application/json
+Authorization: Bearer <TO BE AGREED WITH BANK ON AUTH METHOD OF THIS API CALL>
+{
+  "serial_number": "string",
+  "public_key": "string",
+  "software_version": "string",
+  "os_version": "string",
+  "merchant_data": {
+    "merchant_name": "string",
+    "merchant_id": "string",
+    "merchant_tin": "string",
+    "checking_account": "string",
+    "bank_mfo": "string"
+  }
+}
+```
+
+Terminal uses the private key to get authentication token for future requests. This process will be automated and implemented inside the HandPay Terminal App.
+
+## 6. Operational Workflow – Who Does What?
+
+Since the bank issues terminals to merchants/business entities, the operational flow must be coordinated with them.
+We propose the following model for the bank to review and refine.
+
+### 6.1. Recommended Flow (Bank-Managed Provisioning)
+
+#### 1. Bank Onboards Merchant
+
+- Merchant opens account / signs acquiring agreement.
+- Bank assigns:
+  - merchant_id
+  - Merchant checking account
+
+#### 2. Bank Issues SmartOne Terminal
+
+- Bank or SmartOne provider installs the HandPay Terminal App on the device (through MDM, factory image, or manual install).
+- Device is delivered to the merchant.
+
+#### 3. Initial Terminal Setup at Merchant Site
+
+- Merchant powers on SmartOne terminal.
+- HandPay app runs a Setup Wizard:
+  1. Generates RSA key pair in the background (without any user intervention).
+  2. Reads terminal serial number.
+  3. Asks for activation code or merchant ID (see options below).
+
+#### 4. Bank Backend Registers Terminal with HandPay
+
+- Option A: Activation Code Flow:
+
+  - Bank portal generates an activation code for a merchant and terminal.
+  - Merchant enters this code into the terminal app.
+  - Terminal app sends terminal and software data (documented above) + activation code → Bank backend (includes merchant data) → HandPay `/api/v1/provider/terminals` API.
+
+- Option B: Direct Bank Call Flow:
+  - Bank backend calls `/api/v1/provider/terminals` when issuing the terminal (before delivery), passing merchant data + serial number and public key collected via internal processes.
+
+#### 5. HandPay Confirms Terminal Registration
+
+- HandPay Backend responds with `terminal_id`, `merchant_id`.
+- HandPay app stores `terminal_id` and `merchant_id` and uses them for future requests.
+
+#### 6. Terminal is Ready for Payments
+
+Terminal can now:
+
+- Initiate palm registration flows
+- Process palm-based payment authorizations
+
+#### 7. Payment Initiation (Overview)
+
+Once terminal & merchant are registered:
+
+1. Cashier on SmartOne terminal:
+
+- Enters amount (or the payment entry will be integrated to external POS system).
+
+2. HandPay app on terminal:
+
+- Starts palm authentication flow.
+
+3. On success:
+
+- HandPay backend:
+  - Resolves palm → user → linked card → e-POS account.
+  - Initiates card charge via bank’s payment API to the dedicated e-POS account.
+
+4. Later:
+
+   - Funds are settled from e-POS → merchant checking account according to bank’s clearing rules.
+
+(Details of the charge API must be documented and shared by the Bank.)
+
+#### 8. Sequence Diagram – Terminal & Merchant Registration
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Bank as Bank Backend
+    participant Portal as Bank Merchant Portal
+    participant T as SmartOne Terminal (HandPay App)
+    participant HP as HandPay Backend
+
+    Note over Portal,Bank: Merchant onboarding (bank side)
+    Portal->>Bank: Create merchant + ePOS account
+    Bank-->>Portal: merchant_id, epos_account
+
+    Note over Portal,T: Terminal issuance
+    Bank->>Portal: Register terminal for merchant
+    Portal-->>Bank: activation_code (optional)
+
+    Note over T: First-time setup on terminal
+    T->>T: Generate RSA key pair
+    T->>T: Read serial_number
+    T->>Portal: (optional) Send serial + activation_code
+    Portal->>Bank: Validate & map to merchant
+
+    Bank->>HP: POST /api/v1/provider/terminals/register\n(terminal, merchant, epos)
+    HP-->>Bank: terminal_id + merchant_id
+    Bank-->>T: terminal_id + merchant_id
+
+    Note over T,HP: Terminal is now registered and can process payments
+```
+
+---
+
 # HandPay – Complete User Registration & Card Linking Flow (Technical Specification)
 
 _(For Payment Provider / Bank Integration)_
@@ -264,6 +461,8 @@ Authorization: Bearer <BANK_API_KEY>
 }
 ```
 
+---
+
 ## 4. User status
 
 The bank can query HandPay to get the current status of a user’s palms and linked cards.
@@ -369,201 +568,3 @@ HandPay:
 ✔ Store card token(s) securely
 ✔ Use stored tokens during payments
 ✔ Route payments to bank’s payment API using the token
-
----
-
-# HandPay – SmartOne Terminal & Merchant Onboarding Flow
-
-_(For Payment Provider / Bank Integration)_
-
-## 1. Purpose
-
-This document describes how SmartOne payment terminals running the HandPay Terminal App are:
-
-1. Registered in the HandPay DB, and
-2. Bound to a merchant (business entity) and the HandPay e-POS account provided by the bank.
-
-Registered terminals are then allowed to:
-
-- Send palm-based payment authorization requests to HandPay backend
-- Securely authenticate every request using RSA keys
-
-## 2. Entities
-
-- **SmartOne Terminal** – Physical POS device used in the shop.
-- **HandPay Terminal App** – App installed on the SmartOne terminal.
-- **Merchant** – Business entity that owns/rents the terminal to accept payments.
-- **Bank (Payment Provider)** – Issues terminals, owns e-POS accounts, processes card transactions.
-- **HandPay Backend** – Manages terminals, merchants, palms, and payment routing.
-
-## 3. Terminal Key Generation (On-Device)
-
-On first launch or during initial setup, the HandPay Terminal App on SmartOne must:
-
-1. Generate a unique RSA key pair (2048 bits).
-
-- `terminal_private_key` - stored securely on the device (never leaves the terminal).
-- `terminal_public_key` - shared with HandPay backend during registration.
-
-2. Read terminal serial number from the device.
-3. Collect or receive merchant assignment data (see next section).
-
-## 4. Merchant & Terminal Registration Data
-
-To register a terminal in the HandPay system, the following data is required:
-
-### 4.1. Terminal Data
-
-- `serial_number` – Unique identifier of the SmartOne terminal.
-- `terminal_public_key` – RSA public key generated on-device.
-
-### 4.2. Software Data
-
-- `software_version` – Version of the HandPay Terminal App.
-- `os_version` – Version of the SmartOne terminal OS (e.g.Android 9.0).
-
-### 4.3. Merchant Data
-
-- `merchant_name` – Official name of the business.
-- `merchant_id` – Unique identifier assigned by the bank/payment provider.
-- `merchant_tin` – Tax Identification Number.
-- `checking_account` – Bank account number for settlements.
-- `bank_mfo` – Bank MFO code.
-
-### 4.4. e-POS Account Data
-
-Bank must also provide HandPay with the e-POS account details during the initial integration (_Not in the terminal registration as same e-POS account will be used for all merchant terminal transactions and later get re-distributed to individual business/merchant accounts_).
-
-HandPay will:
-
-- Charge user’s tokenized card → e-POS account, and
-- Later distribute funds from e-POS → merchant checking account based on the merchant registration data.
-
-## 5. Terminal Registration API
-
-```http
-POST /api/v1/provider/terminals
-Content-Type: application/json
-Authorization: Bearer <TO BE AGREED WITH BANK ON AUTH METHOD OF THIS API CALL>
-{
-  "serial_number": "string",
-  "public_key": "string",
-  "software_version": "string",
-  "os_version": "string",
-  "merchant_data": {
-    "merchant_name": "string",
-    "merchant_id": "string",
-    "merchant_tin": "string",
-    "checking_account": "string",
-    "bank_mfo": "string"
-  }
-}
-```
-
-Terminal uses the private key to get authentication token for future requests. This process will be automated and implemented inside the HandPay Terminal App.
-
-## 6. Operational Workflow – Who Does What?
-
-Since the bank issues terminals to merchants/business entities, the operational flow must be coordinated with them.
-We propose the following model for the bank to review and refine.
-
-### 6.1. Recommended Flow (Bank-Managed Provisioning)
-
-#### 1. Bank Onboards Merchant
-
-- Merchant opens account / signs acquiring agreement.
-- Bank assigns:
-  - merchant_id
-  - Merchant checking account
-
-#### 2. Bank Issues SmartOne Terminal
-
-- Bank or SmartOne provider installs the HandPay Terminal App on the device (through MDM, factory image, or manual install).
-- Device is delivered to the merchant.
-
-#### 3. Initial Terminal Setup at Merchant Site
-
-- Merchant powers on SmartOne terminal.
-- HandPay app runs a Setup Wizard:
-  1. Generates RSA key pair in the background (without any user intervention).
-  2. Reads terminal serial number.
-  3. Asks for activation code or merchant ID (see options below).
-
-#### 4. Bank Backend Registers Terminal with HandPay
-
-- Option A: Activation Code Flow:
-
-  - Bank portal generates an activation code for a merchant and terminal.
-  - Merchant enters this code into the terminal app.
-  - Terminal app sends terminal and software data (documented above) + activation code → Bank backend (includes merchant data) → HandPay `/api/v1/provider/terminals` API.
-
-- Option B: Direct Bank Call Flow:
-  - Bank backend calls `/api/v1/provider/terminals` when issuing the terminal (before delivery), passing merchant data + serial number and public key collected via internal processes.
-
-#### 5. HandPay Confirms Terminal Registration
-
-- HandPay Backend responds with `terminal_id`, `merchant_id`.
-- HandPay app stores `terminal_id` and `merchant_id` and uses them for future requests.
-
-#### 6. Terminal is Ready for Payments
-
-Terminal can now:
-
-- Initiate palm registration flows
-- Process palm-based payment authorizations
-
-#### 7. Payment Initiation (Overview)
-
-Once terminal & merchant are registered:
-
-1. Cashier on SmartOne terminal:
-
-- Enters amount (or the payment entry will be integrated to external POS system).
-
-2. HandPay app on terminal:
-
-- Starts palm authentication flow.
-
-3. On success:
-
-- HandPay backend:
-  - Resolves palm → user → linked card → e-POS account.
-  - Initiates card charge via bank’s payment API to the dedicated e-POS account.
-
-4. Later:
-
-
-    - Funds are settled from e-POS → merchant checking account according to bank’s clearing rules.
-
-(Details of the charge API must be documented and shared by the Bank.)
-
-#### 8. Sequence Diagram – Terminal & Merchant Registration
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Bank as Bank Backend
-    participant Portal as Bank Merchant Portal
-    participant T as SmartOne Terminal (HandPay App)
-    participant HP as HandPay Backend
-
-    Note over Portal,Bank: Merchant onboarding (bank side)
-    Portal->>Bank: Create merchant + ePOS account
-    Bank-->>Portal: merchant_id, epos_account
-
-    Note over Portal,T: Terminal issuance
-    Bank->>Portal: Register terminal for merchant
-    Portal-->>Bank: activation_code (optional)
-
-    Note over T: First-time setup on terminal
-    T->>T: Generate RSA key pair
-    T->>T: Read serial_number
-    T->>Portal: (optional) Send serial + activation_code
-    Portal->>Bank: Validate & map to merchant
-
-    Bank->>HP: POST /api/v1/provider/terminals/register\n(terminal, merchant, epos)
-    HP-->>Bank: terminal_id + merchant_id
-    Bank-->>T: terminal_id + merchant_id
-
-    Note over T,HP: Terminal is now registered and can process payments
-```
